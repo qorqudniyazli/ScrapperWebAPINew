@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using ScrapperWebAPI.Helpers.Product;
+using ScrapperWebAPI.Services;
+using System.Text.Json;
 
 namespace ScrapperWebAPI.Controllers;
 
@@ -12,7 +14,7 @@ public class DebugController : ControllerBase
     {
         try
         {
-            Console.WriteLine($"🔍 Testing images for: {store} - {category}");
+            Console.WriteLine($"Testing images for: {store} - {category}");
 
             List<ScrapperWebAPI.Models.ProductDtos.ProductToListDto> products;
 
@@ -54,6 +56,88 @@ public class DebugController : ControllerBase
             };
 
             return Ok(debugInfo);
+        }
+        catch (Exception ex)
+        {
+            return Ok(new { error = ex.Message, stackTrace = ex.StackTrace });
+        }
+    }
+
+    [HttpGet("test-json")]
+    public async Task<IActionResult> TestJSON(string store = "gosport", string category = "NIKE")
+    {
+        try
+        {
+            // Eyni məlumatları ProductSyncManager kimi format et
+            List<ScrapperWebAPI.Models.ProductDtos.ProductToListDto> products;
+
+            if (store.ToLower() == "gosport")
+            {
+                products = await GetGoSportProducts.GetByProductByBrand(category);
+            }
+            else
+            {
+                products = await GetZaraProduct.GetByCategoryName(category);
+            }
+
+            if (products == null || products.Count == 0)
+            {
+                return Ok(new { message = "Məhsul tapılmadı" });
+            }
+
+            // ProductSyncManager kimi format et
+            var formattedProducts = new List<object>();
+
+            foreach (var product in products.Take(2)) // Yalnız ilk 2 məhsul test üçün
+            {
+                var sizes = new List<object>();
+                if (product.Sizes != null)
+                {
+                    foreach (var size in product.Sizes)
+                    {
+                        sizes.Add(new { sizeName = size.SizeName, onStock = size.OnStock });
+                    }
+                }
+
+                var colors = new List<object>();
+                if (product.Colors != null)
+                {
+                    foreach (var color in product.Colors)
+                    {
+                        colors.Add(new { name = color.Name, hex = color.Hex });
+                    }
+                }
+
+                var productData = new
+                {
+                    name = product.Name ?? "",
+                    brand = product.Brand ?? "",
+                    price = product.Price,
+                    discountedPrice = product.DiscountedPrice,
+                    description = !string.IsNullOrEmpty(product.Description) && product.Description.Length > 150
+                        ? product.Description.Substring(0, 150) + "..."
+                        : product.Description ?? "",
+                    images = product.ImageUrl ?? new List<string>(),
+                    sizes = sizes,
+                    colors = colors,
+                    store = store,
+                    category = category,
+                    processedAt = DateTime.Now.ToString("HH:mm:ss")
+                };
+
+                formattedProducts.Add(productData);
+            }
+
+            var json = JsonSerializer.Serialize(formattedProducts, new JsonSerializerOptions { WriteIndented = true });
+
+            return Ok(new
+            {
+                totalProducts = products.Count,
+                formattedProductsCount = formattedProducts.Count,
+                jsonSize = json.Length,
+                sampleJson = json,
+                products = formattedProducts
+            });
         }
         catch (Exception ex)
         {

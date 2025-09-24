@@ -18,7 +18,7 @@ namespace ScrapperWebAPI.Helpers.Product
 
             var allData = new ConcurrentBag<GoSportProduct>();
             int page = 1;
-            int? lastPageNumber = null;
+            int? lastPageNumber = 2; //burada null idi yazdigim 2  2 - sehifeni getirmek ucundur
 
             var handler = new HttpClientHandler
             {

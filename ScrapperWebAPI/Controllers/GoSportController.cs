@@ -1,14 +1,10 @@
 ﻿using HtmlAgilityPack;
 using Microsoft.AspNetCore.Mvc;
+using ScrapperWebAPI.Models.GoSport;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
-using System.Text.Json;
 using System.Text.RegularExpressions;
-using ScrapperWebAPI.Models;
-using ScrapperWebAPI.Models.GoSport;
-using System.Xml;
 namespace ScrapperWebAPI.Controllers;
 
 [ApiController]
@@ -136,7 +132,7 @@ public class GoSportController : ControllerBase
             await Task.WhenAll(limitedTasks);
 
             Console.WriteLine($"Page {page}: Found {productDivs.Count} products");
-    
+
 
             if (lastPageNumber.HasValue && page >= lastPageNumber.Value)
                 break;
