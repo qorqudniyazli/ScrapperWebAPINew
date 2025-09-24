@@ -1,5 +1,6 @@
 ﻿using ZaraScraperApi.Controllers;
-using ScrapperWebAPI.Services; // Yeni service üçün
+using ScrapperWebAPI.Services;
+using ScrapperWebAPI.Controllers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,7 +28,16 @@ builder.Services.AddHttpClient<ZaraController>(client =>
     client.Timeout = TimeSpan.FromSeconds(30);
 });
 
-// Static service istifadə olunur, background service qeydiyyatı lazım deyil
+// 🎯 YENİ: Weekly Category Scheduler Service qeydiyyatı
+builder.Services.AddHostedService<WeeklyCategorySchedulerService>();
+
+// 🎯 YENİ: HttpClient Factory konfiqurasiyası
+builder.Services.AddHttpClient("DefaultClient", client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+});
 
 var app = builder.Build();
 

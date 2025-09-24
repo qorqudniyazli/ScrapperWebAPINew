@@ -216,7 +216,7 @@ namespace ScrapperWebAPI.Services
                         i + 1, batches.Count, batch.Count);
 
                     var response = await httpClient.PostAsync(
-                        "http://192.168.10.150:5001/api/v1/products-stock/add-products",
+                        "http://69.62.114.202:5009/api/v1/products-stock/add-products",
                         content);
 
                     if (response.IsSuccessStatusCode)

@@ -40,6 +40,7 @@ namespace ScrapperWebAPI.Helpers.Mappers
                     Price = item.Price,
                     Description = item.ShortDescription,
                     Brand = item.Brand,
+                    ProductUrl = item.ProductUrl,
                     DiscountedPrice = item.DiscountedPrice,
                     ImageUrl = await ConvertImagesToBase64(item.AdditionalImages), // YENİ: Base64 çevirmə
                 };
@@ -63,13 +64,11 @@ namespace ScrapperWebAPI.Helpers.Mappers
             return list;
         }
 
-        // YENİ: Sinxron versiya (köhnə kodu saxlamaq üçün)
         public static List<ProductToListDto> Map(List<GoSportProduct> products)
         {
             return MapAsync(products).Result; // Async-i sinxron çağırırıq
         }
 
-        // YENİ: Şəkilləri Base64-ə çevirmə methodu
         private static async Task<List<string>> ConvertImagesToBase64(List<string> imageUrls)
         {
             if (imageUrls == null || imageUrls.Count == 0)
@@ -77,8 +76,7 @@ namespace ScrapperWebAPI.Helpers.Mappers
 
             var base64Images = new List<string>();
 
-            // Paralel şəkil yükləmə
-            var downloadTasks = imageUrls.Take(5).Select(async imageUrl => // İlk 5 şəkil
+            var downloadTasks = imageUrls.Take(5).Select(async imageUrl => 
             {
                 await _downloadSemaphore.WaitAsync();
                 try
@@ -106,7 +104,6 @@ namespace ScrapperWebAPI.Helpers.Mappers
             return base64Images;
         }
 
-        // YENİ: Tək şəkil yükləmə və Base64 çevirmə
         private static async Task<string> DownloadImageAsBase64(string imageUrl)
         {
             if (string.IsNullOrEmpty(imageUrl))
@@ -116,13 +113,10 @@ namespace ScrapperWebAPI.Helpers.Mappers
             {
                 Console.WriteLine($"Şəkil yüklənir: {imageUrl}");
 
-                // Şəkil yükləmə
                 var imageBytes = await _httpClient.GetByteArrayAsync(imageUrl);
 
-                // MIME type təyin etmə
                 var mimeType = GetMimeTypeFromUrl(imageUrl);
 
-                // Base64-ə çevirmə
                 var base64String = Convert.ToBase64String(imageBytes);
                 var dataUri = $"data:{mimeType};base64,{base64String}";
 
@@ -136,7 +130,6 @@ namespace ScrapperWebAPI.Helpers.Mappers
             }
         }
 
-        // YENİ: URL-dən MIME type təyin etmə
         private static string GetMimeTypeFromUrl(string url)
         {
             if (string.IsNullOrEmpty(url))
@@ -156,7 +149,6 @@ namespace ScrapperWebAPI.Helpers.Mappers
             };
         }
 
-        // YENİ: Daha təkmil versiya - şəkil ölçüsü ilə
         public static async Task<List<ProductToListDto>> MapWithImageOptimization(
             List<GoSportProduct> products,
             int maxImageWidth = 500,
@@ -197,7 +189,6 @@ namespace ScrapperWebAPI.Helpers.Mappers
             return list;
         }
 
-        // YENİ: Şəkil optimallaşdırması ilə çevirmə
         private static async Task<List<string>> ConvertAndOptimizeImages(
             List<string> imageUrls,
             int maxWidth,
@@ -208,7 +199,6 @@ namespace ScrapperWebAPI.Helpers.Mappers
 
             var base64Images = new List<string>();
 
-            // Maksimum şəkil sayı
             var urlsToProcess = imageUrls.Take(maxImages);
 
             foreach (var imageUrl in urlsToProcess)
@@ -258,7 +248,6 @@ namespace ScrapperWebAPI.Helpers.Mappers
             }
         }
 
-        // YENİ: Cleanup method
         public static void Dispose()
         {
             _httpClient?.Dispose();

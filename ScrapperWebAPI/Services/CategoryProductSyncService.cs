@@ -1,7 +1,6 @@
 ﻿namespace ScrapperWebAPI.Services;
 
 using global::ScrapperWebAPI.Helpers.Product;
-using ScrapperWebAPI.Helpers.Product;
 
 public class CategoryProductSyncService : BackgroundService
 {

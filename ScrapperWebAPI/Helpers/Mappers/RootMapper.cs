@@ -15,10 +15,11 @@ public static class RootMapper
         return new ProductToListDto
         {
             Name = product.name,
-            Brand = product.brand?.brandGroupCode??"",
-            Description = product.detail?.colors[0].description??"",
+            Brand = product.brand?.brandGroupCode ?? "",
+            Description = product.detail?.colors[0].description ?? "",
             Price = firstColor?.pricing?.price?.value ?? 0,
             DiscountedPrice = null,
+            ProductUrl = $"https://www.zara.com/az/ru/{product.seo.keyword}-p{product.seo.seoProductId}.html",
             Colors = new List<ScrapperWebAPI.Models.ProductDtos.Color>
             {
                 MapColor(root)

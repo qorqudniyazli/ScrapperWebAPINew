@@ -32,7 +32,6 @@ public class DebugController : ControllerBase
                 return Ok(new { message = "Məhsul tapılmadı", store, category });
             }
 
-            // İlk məhsulun şəkil məlumatlarını detailed yoxla
             var firstProduct = products[0];
 
             var debugInfo = new
@@ -43,7 +42,6 @@ public class DebugController : ControllerBase
                 imageUrls = firstProduct.ImageUrl?.Take(3).ToList(), // İlk 3 şəkil
                 hasImages = firstProduct.ImageUrl != null && firstProduct.ImageUrl.Count > 0,
 
-                // Debug üçün
                 allProducts = products.Take(2).Select(p => new
                 {
                     name = p.Name,
@@ -68,7 +66,6 @@ public class DebugController : ControllerBase
     {
         try
         {
-            // Eyni məlumatları ProductSyncManager kimi format et
             List<ScrapperWebAPI.Models.ProductDtos.ProductToListDto> products;
 
             if (store.ToLower() == "gosport")
@@ -85,7 +82,6 @@ public class DebugController : ControllerBase
                 return Ok(new { message = "Məhsul tapılmadı" });
             }
 
-            // ProductSyncManager kimi format et
             var formattedProducts = new List<object>();
 
             foreach (var product in products.Take(2)) // Yalnız ilk 2 məhsul test üçün
