@@ -10,7 +10,7 @@ public class WeeklyCategorySchedulerService : BackgroundService
     private readonly ILogger<WeeklyCategorySchedulerService> _logger;
     private readonly IServiceProvider _serviceProvider;
 
-    private readonly TimeSpan _scheduledTime = new TimeSpan(19, 00, 0);
+    private readonly TimeSpan _scheduledTime = new TimeSpan(23, 15, 0);
     private readonly DayOfWeek _scheduledDay = DayOfWeek.Wednesday;
     private readonly List<string> _supportedStores = new List<string> { "gosport", "zara" };
 

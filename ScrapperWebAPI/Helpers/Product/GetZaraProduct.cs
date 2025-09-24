@@ -5,6 +5,7 @@ using ScrapperWebAPI.Models.Zara;
 using ScrapperWebAPI.Models.Zara.Product;
 using System.Collections.Concurrent;
 using System.Net.Http;
+using System.Text;
 using ZaraScraperWebApi.Models;
 
 namespace ScrapperWebAPI.Helpers.Product;
@@ -12,7 +13,7 @@ namespace ScrapperWebAPI.Helpers.Product;
 public static class GetZaraProduct
 {
     private static readonly HttpClient _httpClient;
-    private static readonly SemaphoreSlim _semaphore = new SemaphoreSlim(20); // 20 parallel requests
+    private static readonly SemaphoreSlim _semaphore = new SemaphoreSlim(20);
 
     static GetZaraProduct()
     {
@@ -38,52 +39,173 @@ public static class GetZaraProduct
             var categoryId = await GetCategoryLink(category);
             if (categoryId == 0)
             {
-                Console.WriteLine($"Category '{category}' not found");
                 return new List<ProductToListDto>();
             }
 
             string link = CreateLink(categoryId);
 
-            // Get product links
+            using var apiClient = new HttpClient()
+            {
+                Timeout = TimeSpan.FromMinutes(10)
+            };
+
             var productLinks = await GetProductLinks(link);
             if (productLinks.Count == 0)
             {
-                Console.WriteLine("No product links found");
                 return new List<ProductToListDto>();
             }
 
-            Console.WriteLine($"Found {productLinks.Count} product links. Starting parallel processing...");
+            const int pageSize = 50;
+            var allProducts = new List<ProductToListDto>();
 
-            // PARALLEL PROCESSING - Key optimization
-            var productDetails = new ConcurrentBag<ProductToListDto>();
-
-            var tasks = productLinks.Select(async seoLink =>
+            for (int i = 0; i < productLinks.Count; i += pageSize)
             {
-                await _semaphore.WaitAsync();
-                try
-                {
-                    var product = await ProcessProductLink(seoLink);
-                    if (product != null)
-                    {
-                        productDetails.Add(product);
-                    }
-                }
-                finally
-                {
-                    _semaphore.Release();
-                }
-            });
+                var currentBatch = productLinks.Skip(i).Take(pageSize).ToList();
+                var pageNumber = (i / pageSize) + 1;
 
-            await Task.WhenAll(tasks);
+                var pageProducts = await ProcessProductBatch(currentBatch, pageNumber);
 
-            Console.WriteLine($"Successfully processed {productDetails.Count} products");
-            return productDetails.ToList();
+                if (pageProducts.Count > 0)
+                {
+                    await SendPageToExternalAPI(pageProducts, category, pageNumber, apiClient);
+                    allProducts.AddRange(pageProducts);
+                }
+
+                await Task.Delay(1000);
+            }
+
+            return allProducts;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in GetByCategoryName: {ex.Message}");
             return new List<ProductToListDto>();
         }
+    }
+
+    private static async Task<List<ProductToListDto>> ProcessProductBatch(List<string> productLinks, int pageNumber)
+    {
+        var productDetails = new ConcurrentBag<ProductToListDto>();
+
+        var tasks = productLinks.Select(async seoLink =>
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                var product = await ProcessProductLink(seoLink);
+                if (product != null)
+                {
+                    productDetails.Add(product);
+                }
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks);
+        return productDetails.ToList();
+    }
+
+    private static async Task SendPageToExternalAPI(List<ProductToListDto> products, string category, int pageNumber, HttpClient apiClient)
+    {
+        try
+        {
+            var productsForAPI = new List<object>();
+
+            foreach (var product in products)
+            {
+                var sizes = new List<object>();
+                if (product.Sizes != null)
+                {
+                    foreach (var size in product.Sizes)
+                    {
+                        sizes.Add(new { sizeName = size.SizeName, onStock = size.OnStock });
+                    }
+                }
+
+                var colors = new List<object>();
+                if (product.Colors != null)
+                {
+                    foreach (var color in product.Colors)
+                    {
+                        colors.Add(new { name = color.Name, hex = color.Hex });
+                    }
+                }
+
+                var productData = new
+                {
+                    name = product.Name ?? "",
+                    brand = product.Brand ?? "",
+                    price = product.Price,
+                    productUrl = product.ProductUrl,
+                    discountedPrice = product.DiscountedPrice,
+                    description = !string.IsNullOrEmpty(product.Description) && product.Description.Length > 150
+                        ? product.Description.Substring(0, 150) + "..."
+                        : product.Description ?? "",
+                    images = product.ImageUrl ?? new List<string>(),
+                    sizes = sizes,
+                    colors = colors,
+                    store = "zara",
+                    category = category,
+                    processedAt = DateTime.Now.ToString("HH:mm:ss")
+                };
+
+                productsForAPI.Add(productData);
+            }
+
+            const int batchSize = 20;
+            var batches = ChunkList(productsForAPI, batchSize);
+
+            for (int i = 0; i < batches.Count; i++)
+            {
+                var batch = batches[i];
+                const int maxRetries = 3;
+
+                for (int retry = 0; retry < maxRetries; retry++)
+                {
+                    try
+                    {
+                        var json = JsonConvert.SerializeObject(batch);
+                        var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                        var response = await apiClient.PostAsync(
+                            "http://69.62.114.202:5009/api/v1/products-stock/add-products",
+                            content);
+
+                        if (response.IsSuccessStatusCode)
+                        {
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (retry < maxRetries - 1)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(5 * (retry + 1)));
+                        }
+                    }
+                }
+
+                if (i < batches.Count - 1)
+                {
+                    await Task.Delay(2000);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+        }
+    }
+
+    private static List<List<T>> ChunkList<T>(List<T> source, int chunkSize)
+    {
+        var chunks = new List<List<T>>();
+        for (int i = 0; i < source.Count; i += chunkSize)
+        {
+            chunks.Add(source.Skip(i).Take(chunkSize).ToList());
+        }
+        return chunks;
     }
 
     private static async Task<HashSet<string>> GetProductLinks(string link)
@@ -93,7 +215,6 @@ public static class GetZaraProduct
             var response = await GetWithRetry(link);
             if (response == null)
             {
-                Console.WriteLine($"Failed to get category data from: {link}");
                 return new HashSet<string>();
             }
 
@@ -130,7 +251,6 @@ public static class GetZaraProduct
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error getting product links: {ex.Message}");
             return new HashSet<string>();
         }
     }
@@ -142,7 +262,6 @@ public static class GetZaraProduct
             var linkJson = await GetWithRetry(seoLink);
             if (linkJson == null)
             {
-                Console.WriteLine($"Failed to get product data from: {seoLink}");
                 return null;
             }
 
@@ -152,24 +271,21 @@ public static class GetZaraProduct
                 var dto = RootMapper.MapToDto(productDetail);
                 if (dto != null)
                 {
-                    Console.WriteLine($"Successfully processed product: {dto.Name}");
                     return dto;
                 }
             }
         }
         catch (JsonException jsonEx)
         {
-            Console.WriteLine($"JSON parsing error for {seoLink}: {jsonEx.Message}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error processing product link {seoLink}: {ex.Message}");
         }
 
         return null;
     }
 
-    private static async Task<string> GetWithRetry(string url, int maxRetries = 2)
+    private static async Task<string> GetWithRetry(string url, int maxRetries = 3)
     {
         for (int i = 0; i <= maxRetries; i++)
         {
@@ -182,33 +298,29 @@ public static class GetZaraProduct
                 }
                 else
                 {
-                    Console.WriteLine($"HTTP {response.StatusCode} for {url}");
                     if (i == maxRetries)
                         return null;
                 }
             }
             catch (HttpRequestException httpEx)
             {
-                Console.WriteLine($"HTTP error (attempt {i + 1}): {httpEx.Message}");
                 if (i == maxRetries)
                     return null;
             }
             catch (TaskCanceledException timeoutEx)
             {
-                Console.WriteLine($"Timeout error (attempt {i + 1}): {timeoutEx.Message}");
                 if (i == maxRetries)
                     return null;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unexpected error (attempt {i + 1}): {ex.Message}");
                 if (i == maxRetries)
                     return null;
             }
 
             if (i < maxRetries)
             {
-                await Task.Delay(200 * (i + 1)); // Progressive delay
+                await Task.Delay(200 * (i + 1));
             }
         }
 
@@ -222,7 +334,6 @@ public static class GetZaraProduct
             var parsed = ParseMenu(category);
             if (string.IsNullOrEmpty(parsed.Sub))
             {
-                Console.WriteLine($"Invalid category format: {category}. Expected format: 'main-sub'");
                 return 0;
             }
 
@@ -231,14 +342,12 @@ public static class GetZaraProduct
             var json = await GetWithRetry(url);
             if (json == null)
             {
-                Console.WriteLine("Failed to get category data");
                 return 0;
             }
 
             ZaraCategoryRoot data = JsonConvert.DeserializeObject<ZaraCategoryRoot>(json);
             if (data?.Categories == null)
             {
-                Console.WriteLine("Invalid category data structure");
                 return 0;
             }
 
@@ -252,25 +361,21 @@ public static class GetZaraProduct
                         {
                             long subcategoryId = sub.Id;
 
-                            // If nested subcategory exists, take the first one
                             if (sub.Subcategories != null && sub.Subcategories.Count > 0)
                             {
                                 subcategoryId = sub.Subcategories[0].Id;
                             }
 
-                            Console.WriteLine($"Found category '{parsed.Sub}' with ID: {subcategoryId}");
                             return subcategoryId;
                         }
                     }
                 }
             }
 
-            Console.WriteLine($"Category '{parsed.Sub}' not found");
             return 0;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error getting category link: {ex.Message}");
             return 0;
         }
     }
@@ -293,7 +398,6 @@ public static class GetZaraProduct
         return $"https://www.zara.com/az/ru/category/{id}/products?ajax=true";
     }
 
-    // Cleanup method for proper disposal
     public static void Dispose()
     {
         _httpClient?.Dispose();

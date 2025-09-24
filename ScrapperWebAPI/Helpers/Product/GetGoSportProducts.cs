@@ -6,6 +6,8 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Text.RegularExpressions;
+using Newtonsoft.Json;
+using System.Text;
 
 namespace ScrapperWebAPI.Helpers.Product;
 
@@ -14,10 +16,10 @@ public static class GetGoSportProducts
     public async static Task<List<ProductToListDto>> GetByProductByBrand(string brand)
     {
         string href = await GetBrandLink(brand);
-
         var allData = new ConcurrentBag<GoSportProduct>();
+
         int page = 1;
-        int? lastPageNumber = null; //burada null idi yazdigim 2  2 - sehifeni getirmek ucundur
+        int? lastPageNumber = null;
 
         var handler = new HttpClientHandler
         {
@@ -33,19 +35,38 @@ public static class GetGoSportProducts
         client.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
 
+        using var apiClient = new HttpClient()
+        {
+            Timeout = TimeSpan.FromMinutes(10)
+        };
+
         while (true)
         {
             var url = $"{href}?page={page}";
-            string html;
+            string html = null;
 
-            try
+            bool pageSuccess = false;
+            for (int attempt = 1; attempt <= 3; attempt++)
             {
-                html = await client.GetStringAsync(url);
+                try
+                {
+                    html = await client.GetStringAsync(url);
+                    pageSuccess = true;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (attempt < 3)
+                    {
+                        await Task.Delay(2000 * attempt);
+                    }
+                }
             }
-            catch (Exception ex)
+
+            if (!pageSuccess)
             {
-                Console.WriteLine($"Failed to fetch page {page}: {ex.Message}");
-                break;
+                page++;
+                continue;
             }
 
             var doc = new HtmlDocument();
@@ -54,30 +75,32 @@ public static class GetGoSportProducts
             if (lastPageNumber == null)
             {
                 lastPageNumber = GetLastPageNumber(doc);
-                Console.WriteLine($"Total pages found: {lastPageNumber}");
             }
 
             var productDivs = doc.DocumentNode.SelectNodes("//div[contains(@class, 'product-card-1')]");
 
             if (productDivs == null || productDivs.Count == 0)
             {
-                Console.WriteLine($"No products found on page {page}");
-                break;
+                if (lastPageNumber.HasValue && page >= lastPageNumber.Value)
+                    break;
+
+                page++;
+                continue;
             }
 
-            // OPTIMIZED PARALLEL - Daha çox paralel task
+            var currentPageProducts = new ConcurrentBag<GoSportProduct>();
+
             var tasks = productDivs.Select(async productDiv =>
             {
                 var product = ExtractProductFromDiv(productDiv, href);
                 if (product != null)
                 {
-                    // CRITICAL: Hər məhsul üçün detail yükləmə
                     await EnrichProductWithDetails(product, client);
+                    currentPageProducts.Add(product);
                     allData.Add(product);
                 }
             });
 
-            // 15 paralel task - optimal balans
             var semaphore = new SemaphoreSlim(15);
             var limitedTasks = tasks.Select(async task =>
             {
@@ -94,24 +117,128 @@ public static class GetGoSportProducts
 
             await Task.WhenAll(limitedTasks);
 
-            Console.WriteLine($"Page {page}: Found {productDivs.Count} products");
+            if (currentPageProducts.Count > 0)
+            {
+                var mappedProducts = GoSportMapper.Map(currentPageProducts.ToList());
+                await SendPageToExternalAPI(mappedProducts, brand, page, apiClient);
+            }
 
             if (lastPageNumber.HasValue && page >= lastPageNumber.Value)
                 break;
 
             page++;
+            await Task.Delay(1000);
         }
 
-        Console.WriteLine($"Total products scraped: {allData.Count}");
-        var mappedData = GoSportMapper.Map(allData.ToList());
-        return mappedData;
+        var allMappedData = GoSportMapper.Map(allData.ToList());
+        return allMappedData;
+    }
+
+    private static async Task SendPageToExternalAPI(List<ProductToListDto> products, string brand, int pageNumber, HttpClient apiClient)
+    {
+        try
+        {
+            var productsForAPI = new List<object>();
+
+            foreach (var product in products)
+            {
+                var sizes = new List<object>();
+                if (product.Sizes != null)
+                {
+                    foreach (var size in product.Sizes)
+                    {
+                        sizes.Add(new { sizeName = size.SizeName, onStock = size.OnStock });
+                    }
+                }
+
+                var colors = new List<object>();
+                if (product.Colors != null)
+                {
+                    foreach (var color in product.Colors)
+                    {
+                        colors.Add(new { name = color.Name, hex = color.Hex });
+                    }
+                }
+
+                var productData = new
+                {
+                    name = product.Name ?? "",
+                    brand = product.Brand ?? "",
+                    price = product.Price,
+                    productUrl = product.ProductUrl,
+                    discountedPrice = product.DiscountedPrice,
+                    description = !string.IsNullOrEmpty(product.Description) && product.Description.Length > 150
+                        ? product.Description.Substring(0, 150) + "..."
+                        : product.Description ?? "",
+                    images = product.ImageUrl ?? new List<string>(),
+                    sizes = sizes,
+                    colors = colors,
+                    store = "gosport",
+                    category = brand,
+                    processedAt = DateTime.Now.ToString("HH:mm:ss")
+                };
+
+                productsForAPI.Add(productData);
+            }
+
+            const int batchSize = 20;
+            var batches = ChunkList(productsForAPI, batchSize);
+
+            for (int i = 0; i < batches.Count; i++)
+            {
+                var batch = batches[i];
+                const int maxRetries = 3;
+
+                for (int retry = 0; retry < maxRetries; retry++)
+                {
+                    try
+                    {
+                        var json = JsonConvert.SerializeObject(batch);
+                        var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                        var response = await apiClient.PostAsync(
+                            "http://69.62.114.202:5009/api/v1/products-stock/add-products",
+                            content);
+
+                        if (response.IsSuccessStatusCode)
+                        {
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (retry < maxRetries - 1)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(5 * (retry + 1)));
+                        }
+                    }
+                }
+
+                if (i < batches.Count - 1)
+                {
+                    await Task.Delay(2000);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+        }
+    }
+
+    private static List<List<T>> ChunkList<T>(List<T> source, int chunkSize)
+    {
+        var chunks = new List<List<T>>();
+        for (int i = 0; i < source.Count; i += chunkSize)
+        {
+            chunks.Add(source.Skip(i).Take(chunkSize).ToList());
+        }
+        return chunks;
     }
 
     public async static Task<string> GetBrandLink(string brand)
     {
         using var httpClient = new HttpClient();
 
-        // Paralel brand search
         var searchTasks = Enumerable.Range(1, 6).Select(async page =>
         {
             try
@@ -138,7 +265,6 @@ public static class GetGoSportProducts
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error searching brand on page {page}: {ex.Message}");
             }
             return "";
         });
@@ -161,13 +287,12 @@ public static class GetGoSportProducts
             detailDoc.LoadHtml(detailHtml);
 
             ExtractDetailPrice(detailDoc, product);
-            ExtractImages(detailDoc, product); // CRITICAL: Bu işləyir
+            ExtractImages(detailDoc, product);
             ExtractDescription(detailDoc, product);
             ExtractCategories(detailDoc, product);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error enriching product {product.Id}: {ex.Message}");
         }
     }
 
@@ -181,8 +306,7 @@ public static class GetGoSportProducts
             }
             catch (Exception ex) when (i < maxRetries)
             {
-                Console.WriteLine($"Retry {i + 1} for {url}: {ex.Message}");
-                await Task.Delay(150 * (i + 1)); // Optimal gecikdirmə
+                await Task.Delay(150 * (i + 1));
             }
         }
         return null;
@@ -232,12 +356,10 @@ public static class GetGoSportProducts
 
     private static void ExtractImages(HtmlDocument doc, GoSportProduct product)
     {
-        // ORIJINAL SELECTOR - İşləyən versiya
         var images = doc.DocumentNode.SelectNodes("//div[contains(@class,'product-gallery')]//img");
 
         if (images != null && images.Count > 0)
         {
-            // AdditionalImages list-ini təmizləyirik
             product.AdditionalImages.Clear();
 
             foreach (var img in images)
@@ -248,7 +370,6 @@ public static class GetGoSportProducts
                     if (!src.StartsWith("http"))
                         src = "https://www.gosport.az" + src;
 
-                    // Təkrarlanmanı yoxlayırıq
                     if (!product.AdditionalImages.Contains(src))
                     {
                         product.AdditionalImages.Add(src);
@@ -258,12 +379,6 @@ public static class GetGoSportProducts
 
             if (string.IsNullOrEmpty(product.ImageUrl) && product.AdditionalImages.Count > 0)
                 product.ImageUrl = product.AdditionalImages[0];
-
-            Console.WriteLine($"Product {product.Id}: Found {product.AdditionalImages.Count} images");
-        }
-        else
-        {
-            Console.WriteLine($"Product {product.Id}: No gallery images found");
         }
     }
 
@@ -334,7 +449,6 @@ public static class GetGoSportProducts
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error getting last page number: {ex.Message}");
             return 1;
         }
     }
@@ -434,12 +548,6 @@ public static class GetGoSportProducts
                             IsAvailable = input.GetAttributeValue("disabled", "") != "disabled"
                         };
 
-                        var inputValue = input.GetAttributeValue("value", "");
-                        if (!string.IsNullOrEmpty(inputValue))
-                        {
-                            ExtractSizeDetailsFromJson(inputValue, size);
-                        }
-
                         product.Sizes.Add(size);
                     }
                 }
@@ -449,13 +557,7 @@ public static class GetGoSportProducts
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error extracting product: {ex.Message}");
             return null;
         }
-    }
-
-    private static void ExtractSizeDetailsFromJson(string jsonValue, GoSportProductSize size)
-    {
-        // Implementation if needed
     }
 }
